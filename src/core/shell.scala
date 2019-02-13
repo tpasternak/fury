@@ -37,7 +37,7 @@ case class Shell(environment: Environment) {
     implicit val defaultEnvironment: Environment =
       environment.append("SHARED", layout.sharedDir.value)
     sh"java -Djava.security.manager -Djava.security.policy=${policyFile.value} -Dfury.sharedDir=${layout.sharedDir.value} -cp ${classpath
-      .mkString(":")} $main".async(output(_), output(_))
+      .mkString(":")} hello.Hello".async(output(_), output(_))
   }
 
   object git {
@@ -182,8 +182,11 @@ case class Shell(environment: Environment) {
     def clean(name: String)(output: String => Unit): Running =
       sh"bloop clean --config-dir .fury/bloop $name".async(output(_), output(_))
 
-    def compile(name: String)(output: String => Unit): Running =
+    def compile(name: String)(output: String => Unit): Running = {
+      println(s"bloop compile $name --config-dir .fury/bloop")
       sh"bloop compile $name --config-dir .fury/bloop".async(output(_), output(_))
+
+    }
 
     def startServer(): Running =
       sh"bloop server".async(_ => (), _ => ())

@@ -148,6 +148,7 @@ case class BloopSpec(org: String, name: String, version: String)
 
 case class Compilation(
     graph: Map[ModuleRef, List[ModuleRef]],
+    reducedGraph: Map[ModuleRef, List[ModuleRef]],
     checkouts: Set[Checkout],
     artifacts: Map[ModuleRef, Artifact],
     universe: Universe) {
@@ -250,58 +251,59 @@ case class Compilation(
 
     val artifact = artifacts(moduleRef)
 
-    val newFutures = graph(moduleRef).foldLeft(futures) { (futures, dep) =>
+    val newFutures = reducedGraph(moduleRef).foldLeft(futures) { (futures, dep) =>
       if (futures.contains(dep)) futures
       else compile(io, dep, multiplexer, futures, layout)
     }
 
-    val dependencyFutures = Future.sequence(graph(moduleRef).map(newFutures))
+    val dependencyFutures = Future.sequence(reducedGraph(moduleRef).map(newFutures))
 
-    val future = dependencyFutures.flatMap { inputs =>
-      if (inputs.exists(!_.success)) {
-        multiplexer(artifact.ref) = SkipCompile(artifact.ref)
-        multiplexer.close(artifact.ref)
-        Future.successful(CompileResult(false, ""))
-      } else
-        Future {
-          val out = new StringBuilder()
-          multiplexer(artifact.ref) = StartCompile(artifact.ref)
+    val future =
+      dependencyFutures.flatMap { inputs =>
+        if (inputs.exists(!_.success)) {
+          multiplexer(artifact.ref) = SkipCompile(artifact.ref)
+          multiplexer.close(artifact.ref)
+          Future.successful(CompileResult(false, ""))
+        } else
+          Future {
+            val out = new StringBuilder()
+            multiplexer(artifact.ref) = StartCompile(artifact.ref)
 
-          val compileResult: Boolean = Try {
-            artifact.sourcePaths.isEmpty || blocking {
-              layout.shell.bloop
-                .compile(hash(artifact.ref).encoded) { ln =>
+            val compileResult: Boolean = Try {
+              artifact.sourcePaths.isEmpty || blocking {
+                layout.shell.bloop
+                  .compile(hash(artifact.ref).encoded) { ln =>
+                    out.append(ln)
+                    out.append("\n")
+                  }
+                  .await() == 0
+              }
+            }.recover {
+              case e: Exception =>
+                io.println(e.getClass.toString ++ ": " ++ e.getMessage)
+                io.println(e.getStackTrace.mkString("\n"))
+                false
+            }.getOrElse(false)
+
+            val finalResult = if (compileResult && artifact.kind == Application) {
+              layout.shell
+                .runJava(
+                    runtimeClasspath(io, artifact.ref, layout).to[List].map(_.value),
+                    artifact.main.getOrElse(""),
+                    layout) { ln =>
                   out.append(ln)
                   out.append("\n")
                 }
                 .await() == 0
-            }
-          }.recover {
-            case e: Exception =>
-              io.println(e.getClass.toString ++ ": " ++ e.getMessage)
-              io.println(e.getStackTrace.mkString("\n"))
-              false
-          }.getOrElse(false)
+            } else compileResult
 
-          val finalResult = if (compileResult && artifact.kind == Application) {
-            layout.shell
-              .runJava(
-                  runtimeClasspath(io, artifact.ref, layout).to[List].map(_.value),
-                  artifact.main.getOrElse(""),
-                  layout) { ln =>
-                out.append(ln)
-                out.append("\n")
-              }
-              .await() == 0
-          } else compileResult
+            multiplexer(artifact.ref) = StopCompile(artifact.ref, out.toString, finalResult)
 
-          multiplexer(artifact.ref) = StopCompile(artifact.ref, out.toString, finalResult)
+            multiplexer.close(artifact.ref)
 
-          multiplexer.close(artifact.ref)
-
-          CompileResult(finalResult, out.toString)
-        }
-    }
+            CompileResult(finalResult, out.toString)
+          }
+      }
 
     newFutures.updated(artifact.ref, future)
   }
@@ -381,6 +383,12 @@ case class Universe(entities: Map[ProjectId, Entity] = Map()) {
   def clean(ref: ModuleRef, layout: Layout): Unit =
     layout.classesDir.delete().unit
 
+  def getMod(ref: ModuleRef) =
+    for {
+      entity <- entity(ref.projectId)
+      module <- entity.project(ref.moduleId)
+    } yield module
+
   def compilation(io: Io, ref: ModuleRef, layout: Layout): Try[Compilation] =
     for {
       art <- artifact(io, ref, layout)
@@ -392,6 +400,15 @@ case class Universe(entities: Map[ProjectId, Entity] = Map()) {
                 }.sequence
                   .map(_.toMap.updated(art.ref, art.dependencies ++ art.compiler.map(_.ref.hide))))
                 .flatten
+      allModuleRefs = graph.keys
+      allModules    <- allModuleRefs.traverse(x => getMod(x).map((x, _)))
+      applicationModules = allModules.filter { case (_, y) => y.kind == Application }.map {
+        case (x, _) => x
+      }
+      reducedGraph = DirGraph(graph.mapValues(_.toSet))
+        .subgraph(applicationModules.toSet + ref)
+        .edges
+        .mapValues(_.toList)
       artifacts <- graph.keys.map { key =>
                     artifact(io, key, layout).map(key -> _)
                   }.sequence.map(_.toMap)
@@ -399,6 +416,7 @@ case class Universe(entities: Map[ProjectId, Entity] = Map()) {
     } yield
       Compilation(
           graph,
+          reducedGraph,
           checkouts.foldLeft(Set[Checkout]())(_ ++ _),
           artifacts ++ (art.compiler.map { c =>
             c.ref -> c
