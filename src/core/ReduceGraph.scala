@@ -32,7 +32,6 @@ case class DirGraph[A](edges: Map[A, Set[A]]) {
   def subgraph(toLeave: Set[A]): DirGraph[A] = {
     val toCut = edges.keySet &~ toLeave
     toCut.foldRight(this) { (element, graph) =>
-//      println (s"g: ${graph}")
       graph.reduce(element)
     }
   }

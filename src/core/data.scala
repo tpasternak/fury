@@ -285,7 +285,13 @@ case class Compilation(
                             StopCompile(hashes(moduleHash), out.toString(), true)
                           multiplexer.close(hashes(moduleHash))
                         }
-                        case any => () // io.println(s"Unknown: $any")
+                        case r".*'$moduleHash@([a-zA-Z0-9\+\_\=\/]+)' failed to compile.*" => {
+                          out.append(s"Failed to compile '${hashes(moduleHash)}'\n")
+                          multiplexer(hashes(moduleHash)) =
+                            StopCompile(hashes(moduleHash), "", false)
+                          multiplexer.closeAll()
+                        }
+                        case _ => ()
                       }
                     }
                   }

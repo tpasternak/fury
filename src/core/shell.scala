@@ -37,7 +37,7 @@ case class Shell(environment: Environment) {
     implicit val defaultEnvironment: Environment =
       environment.append("SHARED", layout.sharedDir.value)
     sh"java -Djava.security.manager -Djava.security.policy=${policyFile.value} -Dfury.sharedDir=${layout.sharedDir.value} -cp ${classpath
-      .mkString(":")} hello.Hello".async(output(_), output(_))
+      .mkString(":")} $main".async(output(_), output(_))
   }
 
   object git {
