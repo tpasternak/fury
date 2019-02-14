@@ -269,7 +269,7 @@ case class Compilation(
         } else
           Future {
             val out = new StringBuilder()
-            val compileResult: Boolean = Try {
+            val compileResult: Boolean =
               artifact.sourcePaths.isEmpty || blocking {
                 layout.shell.bloop
                   .compile(hash(artifact.ref).encoded) { (ln: String) =>
@@ -291,12 +291,6 @@ case class Compilation(
                   }
                   .await() == 0
               }
-            }.recover {
-              case e: Exception =>
-                io.println(e.getClass.toString ++ ": " ++ e.getMessage)
-                io.println(e.getStackTrace.mkString("\n"))
-                false
-            }.getOrElse(false)
 
             val finalResult = if (compileResult && artifact.kind == Application) {
               layout.shell
