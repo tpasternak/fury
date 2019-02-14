@@ -20,6 +20,7 @@ import guillotine._
 
 import scala.concurrent._
 import scala.util._
+import scala.concurrent.ExecutionContext.Implicits.global
 
 import Args._
 
@@ -206,12 +207,15 @@ object BuildCli {
       future <- ~compilation
                  .compile(io, module.ref(project), multiplexer, Map(), layout)
                  .apply(module.ref(project))
-//      _ <- ~Graph.live(
-//              changed = false,
-//              io,
-//              compilation.graph.mapValues(_.to[Set]),
-//              multiplexer.stream(50, Some(Tick)),
-//              Map())(config.theme)
+                 .map({ x =>
+                   multiplexer.closeAll(); x
+                 })
+      _ <- ~Graph.live(
+              changed = false,
+              io,
+              compilation.graph.mapValues(_.to[Set]),
+              multiplexer.stream(50, Some(Tick)),
+              Map())(config.theme)
       t1 <- Success(System.currentTimeMillis - t0)
       _  <- ~io.println(s"Total time: ${if (t1 >= 10000) s"${t1 / 1000}s" else s"${t1}ms"}\n")
     } yield io.await(Await.result(future, duration.Duration.Inf).success)

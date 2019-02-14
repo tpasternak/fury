@@ -250,7 +250,9 @@ case class Compilation(
     ): Map[ModuleRef, Future[CompileResult]] = {
 
     val artifact = artifacts(moduleRef)
-
+    val hashes = artifacts.keys.map { x =>
+      hash(x).encoded[Base64Url] -> x
+    }.toMap
     val newFutures = reducedGraph(moduleRef).foldLeft(futures) { (futures, dep) =>
       if (futures.contains(dep)) futures
       else compile(io, dep, multiplexer, futures, layout)
@@ -267,14 +269,23 @@ case class Compilation(
         } else
           Future {
             val out = new StringBuilder()
-            multiplexer(artifact.ref) = StartCompile(artifact.ref)
-
             val compileResult: Boolean = Try {
               artifact.sourcePaths.isEmpty || blocking {
                 layout.shell.bloop
-                  .compile(hash(artifact.ref).encoded) { ln =>
-                    out.append(ln)
-                    out.append("\n")
+                  .compile(hash(artifact.ref).encoded) { (ln: String) =>
+                    val x = ln match {
+                      case r"Compiling $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
+                        multiplexer(hashes(moduleHash)) = StartCompile(hashes(moduleHash))
+                      }
+                      case r"Compiled $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
+                        out.append(ln)
+                        out.append("\n")
+                        multiplexer(hashes(moduleHash)) =
+                          StopCompile(hashes(moduleHash), out.toString(), true)
+                        multiplexer.close(hashes(moduleHash))
+                      }
+                      case any => () // io.println(s"Unknown: $any")
+                    }
                   }
                   .await() == 0
               }

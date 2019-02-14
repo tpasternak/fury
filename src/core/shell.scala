@@ -182,11 +182,8 @@ case class Shell(environment: Environment) {
     def clean(name: String)(output: String => Unit): Running =
       sh"bloop clean --config-dir .fury/bloop $name".async(output(_), output(_))
 
-    def compile(name: String)(output: String => Unit): Running = {
-      println(s"bloop compile $name --config-dir .fury/bloop")
+    def compile(name: String)(output: String => Unit): Running =
       sh"bloop compile $name --config-dir .fury/bloop".async(output(_), output(_))
-
-    }
 
     def startServer(): Running =
       sh"bloop server".async(_ => (), _ => ())
