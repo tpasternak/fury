@@ -213,7 +213,7 @@ object BuildCli {
       _ <- ~Graph.live(
               changed = false,
               io,
-              compilation.graph.mapValues(_.to[Set]),
+              compilation.allDependenciesGraph.mapValues(_.to[Set]),
               multiplexer.stream(50, Some(Tick)),
               Map())(config.theme)
       t1 <- Success(System.currentTimeMillis - t0)
@@ -350,7 +350,7 @@ object BuildCli {
       artifact    <- universe.artifact(io, module.ref(project), layout)
       compilation <- universe.compilation(io, module.ref(project), layout)
       _ <- ~Graph
-            .draw(compilation.graph.mapValues(_.to[Set]), true, Map())(config.theme)
+            .draw(compilation.allDependenciesGraph.mapValues(_.to[Set]), true, Map())(config.theme)
             .foreach(io.println(_))
     } yield io.await()
   }

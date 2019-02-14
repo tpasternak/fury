@@ -147,8 +147,8 @@ object BloopSpec {
 case class BloopSpec(org: String, name: String, version: String)
 
 case class Compilation(
-    graph: Map[ModuleRef, List[ModuleRef]],
-    reducedGraph: Map[ModuleRef, List[ModuleRef]],
+    allDependenciesGraph: Map[ModuleRef, List[ModuleRef]],
+    modulesToExecuteBloopGraph: Map[ModuleRef, List[ModuleRef]],
     checkouts: Set[Checkout],
     artifacts: Map[ModuleRef, Artifact],
     universe: Universe) {
@@ -171,7 +171,7 @@ case class Compilation(
               },
               artifact.params,
               artifact.intransitive,
-              graph(ref).map(hash(_))).digest[Md5]
+              allDependenciesGraph(ref).map(hash(_))).digest[Md5]
         }
     )
   }
@@ -253,12 +253,12 @@ case class Compilation(
     val hashes = artifacts.keys.map { x =>
       hash(x).encoded[Base64Url] -> x
     }.toMap
-    val newFutures = reducedGraph(moduleRef).foldLeft(futures) { (futures, dep) =>
+    val newFutures = modulesToExecuteBloopGraph(moduleRef).foldLeft(futures) { (futures, dep) =>
       if (futures.contains(dep)) futures
       else compile(io, dep, multiplexer, futures, layout)
     }
 
-    val dependencyFutures = Future.sequence(reducedGraph(moduleRef).map(newFutures))
+    val dependencyFutures = Future.sequence(modulesToExecuteBloopGraph(moduleRef).map(newFutures))
 
     val future =
       dependencyFutures.flatMap { inputs =>
@@ -282,13 +282,14 @@ case class Compilation(
                         }
                         case r"Compiled $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
                           multiplexer(hashes(moduleHash)) =
-                            StopCompile(hashes(moduleHash), out.toString(), true)
+                            StopCompile(hashes(moduleHash), "", true)
                           multiplexer.close(hashes(moduleHash))
                         }
                         case r".*'$moduleHash@([a-zA-Z0-9\+\_\=\/]+)' failed to compile.*" => {
                           out.append(s"Failed to compile '${hashes(moduleHash)}'\n")
                           multiplexer(hashes(moduleHash)) =
-                            StopCompile(hashes(moduleHash), "", false)
+                            StopCompile(hashes(moduleHash), out.toString(), false)
+                          out.clear()
                           multiplexer.closeAll()
                         }
                         case _ => ()
@@ -396,7 +397,7 @@ case class Universe(entities: Map[ProjectId, Entity] = Map()) {
   def clean(ref: ModuleRef, layout: Layout): Unit =
     layout.classesDir.delete().unit
 
-  def getMod(ref: ModuleRef) =
+  def getMod(ref: ModuleRef): Try[Module] =
     for {
       entity <- entity(ref.projectId)
       module <- entity.project(ref.moduleId)
@@ -414,13 +415,13 @@ case class Universe(entities: Map[ProjectId, Entity] = Map()) {
                   .map(_.toMap.updated(art.ref, art.dependencies ++ art.compiler.map(_.ref.hide))))
                 .flatten
       allModuleRefs = graph.keys
-      allModules    <- allModuleRefs.traverse(x => getMod(x).map((x, _)))
-      applicationModules = allModules.filter { case (_, y) => y.kind == Application }.map {
-        case (x, _) => x
+      allModules    <- allModuleRefs.traverse(ref => getMod(ref).map((ref, _)))
+      applicationModulesRefs = allModules.filter { case (_, mod) => mod.kind == Application }.map {
+        case (ref, _) => ref
       }
-      reducedGraph = DirGraph(graph.mapValues(_.toSet))
-        .subgraph(applicationModules.toSet + ref)
-        .edges
+      reducedGraph = DirectedGraph(graph.mapValues(_.toSet))
+        .subgraph(applicationModulesRefs.toSet + ref)
+        .connections
         .mapValues(_.toList)
       artifacts <- graph.keys.map { key =>
                     artifact(io, key, layout).map(key -> _)
