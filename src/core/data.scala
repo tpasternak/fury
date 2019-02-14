@@ -273,18 +273,20 @@ case class Compilation(
               artifact.sourcePaths.isEmpty || blocking {
                 layout.shell.bloop
                   .compile(hash(artifact.ref).encoded) { (ln: String) =>
-                    val x = ln match {
-                      case r"Compiling $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
-                        multiplexer(hashes(moduleHash)) = StartCompile(hashes(moduleHash))
+                    {
+                      out.append(ln)
+                      out.append("\n")
+                      val x = ln match {
+                        case r"Compiling $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
+                          multiplexer(hashes(moduleHash)) = StartCompile(hashes(moduleHash))
+                        }
+                        case r"Compiled $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
+                          multiplexer(hashes(moduleHash)) =
+                            StopCompile(hashes(moduleHash), out.toString(), true)
+                          multiplexer.close(hashes(moduleHash))
+                        }
+                        case any => () // io.println(s"Unknown: $any")
                       }
-                      case r"Compiled $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
-                        out.append(ln)
-                        out.append("\n")
-                        multiplexer(hashes(moduleHash)) =
-                          StopCompile(hashes(moduleHash), out.toString(), true)
-                        multiplexer.close(hashes(moduleHash))
-                      }
-                      case any => () // io.println(s"Unknown: $any")
                     }
                   }
                   .await() == 0
