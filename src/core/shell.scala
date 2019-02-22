@@ -190,6 +190,9 @@ case class Shell(environment: Environment) {
 
     def startServer(): Running =
       sh"bloop server".async(_ => (), _ => ())
+
+    def startBsp(socket: String): Running =
+      sh"bloop bsp --socket $socket".async(_ => (), _ => ())
   }
 
   object java {

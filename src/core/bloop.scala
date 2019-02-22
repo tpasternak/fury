@@ -24,9 +24,17 @@ import mercator._
 import scala.util._
 import scala.concurrent.duration._
 
+import ch.epfl.scala.bsp4j._
+import org.eclipse.lsp4j.jsonrpc.Launcher
+import java.util.concurrent.Executors
+import org.scalasbt.ipcsocket.UnixDomainSocket
+import scala.collection.JavaConverters._
+
 object Bloop {
 
   private[this] var bloopServer: Option[Running] = None
+  private[this] var bloopBsp: Option[Running]    = None
+  var oLauncher: Option[Launcher[BuildServer]]   = None
 
   private[this] def testServer(): Try[Unit] =
     Success(new Socket("localhost", 8212).close().unit)

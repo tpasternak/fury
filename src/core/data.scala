@@ -15,18 +15,34 @@
  */
 package fury
 
+import java.io.File
 import java.nio.file.Files
+import java.util.Collections
+import java.util.concurrent.Executors
 
+import ch.epfl.scala.bsp4j.{
+  BuildClientCapabilities,
+  BuildServer,
+  CompileParams,
+  InitializeBuildParams,
+  _
+}
 import exoskeleton._
 import gastronomy._
 import kaleidoscope._
 import mercator._
+import org.eclipse.lsp4j.jsonrpc.Launcher
+import org.scalasbt.ipcsocket.UnixDomainSocket
+import com.google.gson.{Gson, JsonElement}
+import fury.Graph.{DiagnosticError, DiagnosticMessage}
 
 import scala.collection.immutable.{SortedSet, TreeSet}
 import scala.collection.mutable.HashMap
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.collection.JavaConverters._
 import scala.concurrent._
 import scala.util._
+import scala.concurrent.duration._
 
 object ManifestEntry {
   implicit val stringShow: StringShow[ManifestEntry] = _.key
@@ -256,6 +272,138 @@ case class Compilation(
       Set(layout.classesDir(hash(c.ref)), layout.resourcesDir(hash(c.ref)))
     } ++ classpath(ref, layout) + layout.classesDir(hash(ref)) + layout.resourcesDir(hash(ref))
 
+  case class BuildingClient(
+      multiplexer: Multiplexer[ModuleRef, CompileEvent],
+      hashes: Map[String, ModuleRef])
+      extends BuildClient {
+    override def onBuildShowMessage(params: ShowMessageParams): Unit = {
+//      println(params.getMessage)
+    }
+
+    override def onBuildLogMessage(params: LogMessageParams): Unit = {
+      //   println(params.toString)
+    }
+
+    override def onBuildPublishDiagnostics(params: PublishDiagnosticsParams): Unit = {
+      //println(params)
+      val uri = new java.net.URI(params.getBuildTarget.getUri)
+      val hash =
+        uri.getRawQuery.split("=")(1)
+      val modref = hashes(hash)
+      val fileff = new java.net.URI(params.getTextDocument.getUri).getRawPath
+      val diag   = params.getDiagnostics.asScala.head
+      multiplexer(modref) = DiagnosticMsg(
+          modref,
+          DiagnosticError(
+              s"\n${fileff}:${diag.getRange.getStart.getLine}:${diag.getRange.getStart.getCharacter}:error: ${diag.getMessage}\n"
+          ) // TODO: beautify me
+      )
+    }
+    override def onBuildTargetDidChange(params: DidChangeBuildTarget): Unit = {
+//      println(s"didChange ${params.toString}")
+
+    }
+
+    override def onBuildTaskStart(params: TaskStartParams): Unit = {
+      val gson = new Gson()
+      val json = params.getData.asInstanceOf[JsonElement]
+      val report =
+        gson.fromJson[CompileTask](json, classOf[CompileTask])
+      val hash =
+        new java.net.URI(report.getTarget.getUri).getRawQuery.split("=")(1)
+      val modref = hashes(hash)
+      //  println(s"Compiling ${modref}")
+      multiplexer(modref) = StartCompile(modref)
+    }
+
+    override def onBuildTaskProgress(params: TaskProgressParams): Unit = {}
+
+    override def onBuildTaskFinish(params: TaskFinishParams): Unit = {
+      val gson = new Gson()
+      params.getDataKind match {
+        case TaskDataKind.COMPILE_REPORT =>
+          val json = params.getData.asInstanceOf[JsonElement]
+          val report =
+            gson.fromJson[CompileReport](json, classOf[CompileReport])
+          val hash =
+            new java.net.URI(report.getTarget.getUri).getRawQuery
+              .split("=")(1) // TODO: parse it better
+          val modref = hashes(hash)
+          params.getStatus match {
+            case StatusCode.OK => {
+              multiplexer(modref) = StopCompile(modref, "", true)
+            }
+            case StatusCode.ERROR => {
+              multiplexer(modref) = StopCompile(modref, params.toString, false)
+            }
+          }
+      }
+    }
+  }
+
+  def retry[T](t: FiniteDuration)(f: => T): Future[T] =
+    try {
+      Future.successful(f)
+    } catch {
+      case e: Exception =>
+        if (t <= 0.milliseconds)
+          Future.failed(e)
+        else {
+          val period = 50.milliseconds
+          Thread.sleep(period.toMillis)
+          retry(t - period)(f)
+        }
+    }
+
+  def compileModule(
+      target: String,
+      layout: Layout,
+      multiplexer: Multiplexer[ModuleRef, CompileEvent],
+      hashes: Map[String, ModuleRef],
+      client: BuildingClient
+    ): Future[ch.epfl.scala.bsp4j.CompileResult] =
+    for {
+      furyTempPath <- Future.fromTry { Path.getTempDir("fury-socket-") }
+      socketPath   = furyTempPath / "socket"
+      _            = layout.shell.bloop.startBsp(socketPath.value)
+      bloopSocket  <- retry(3 seconds) { new UnixDomainSocket(socketPath.value) }
+      launcher = new Launcher.Builder[BuildServer]()
+        .setRemoteInterface(classOf[BuildServer])
+        .setExecutorService(Executors.newCachedThreadPool())
+        .setInput(bloopSocket.getInputStream)
+        .setOutput(bloopSocket.getOutputStream)
+        .setLocalService(client)
+        .create()
+      _      = launcher.startListening()
+      server = launcher.getRemoteProxy
+      capabilities = new BuildClientCapabilities(
+          Collections.singletonList("scala")
+      )
+      _ <- Future {
+            Files.createSymbolicLink((layout.furyDir / ".bloop").javaPath, Path("bloop").javaPath)
+          }.recover {
+            case e: java.io.IOException => ()
+          }
+
+      initializeParams = new InitializeBuildParams(
+          "fury",
+          "1.0.0",
+          "2.0.0-M3",
+          new java.io.File(layout.furyDir.value).toURI.toString, // TODO - this should be done with config dir= `.fury/bloop`
+          capabilities
+      )
+      _       = server.buildInitialize(initializeParams)
+      _       = server.onBuildInitialized()
+      targets <- Future { server.workspaceBuildTargets.get }
+      foundTarget <- Future.fromTry {
+                      targets.getTargets.asScala
+                        .find(_.getDisplayName == target)
+                        .ascribe(new RuntimeException(
+                            s"FATAL ERROR: could not find hash key ${target} in bloop configuration"))
+                    }
+      cp = new CompileParams(Collections.singletonList(foundTarget.getId))
+    } yield server.buildTargetCompile(cp).get
+
   def compile(
       io: Io,
       moduleRef: ModuleRef,
@@ -272,117 +420,66 @@ case class Compilation(
       if (futures.contains(dep)) futures
       else compile(io, dep, multiplexer, futures, layout)
     }
-
     val dependencyFutures = Future.sequence(modulesToExecuteBloopGraph(moduleRef).map(newFutures))
-
     val future =
       dependencyFutures.flatMap { inputs =>
         if (inputs.exists(!_.success)) {
           multiplexer(artifact.ref) = SkipCompile(artifact.ref)
           multiplexer.close(artifact.ref)
           Future.successful(CompileResult(false, ""))
-        } else
-          Future {
-            val out           = new StringBuilder()
-            val noCompilation = artifact.sourcePaths.isEmpty
+        } else {
+          val out           = new StringBuilder()
+          val noCompilation = artifact.sourcePaths.isEmpty
 
-            if (noCompilation) deepDependencies(artifact.ref).foreach { ref =>
-              multiplexer(ref) = NoCompile(ref)
-            }
-
-            val compileResult: Boolean =
-              noCompilation || blocking {
-                layout.shell.bloop
-                  .compile(hash(artifact.ref).encoded) { (ln: String) =>
-                    {
-                      out.append(ln)
-                      out.append("\n")
-                      val x = ln match {
-                        case r"Compiling $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
-                          val ref = hashes(moduleHash)
-                          deepDependencies(ref).foreach { ref =>
-                            multiplexer(ref) = NoCompile(ref)
-                          }
-                          multiplexer(ref) = StartCompile(ref)
-                        }
-                        case r"Compiled $moduleHash@([a-zA-Z0-9\+\_\=\/]+).*" => {
-                          val ref = hashes(moduleHash)
-                          deepDependencies(ref).foreach { ref =>
-                            multiplexer(ref) = NoCompile(ref)
-                          }
-                          multiplexer(hashes(moduleHash)) =
-                            StopCompile(hashes(moduleHash), "", true)
-                          multiplexer.close(hashes(moduleHash))
-                        }
-                        case r".*'$moduleHash@([a-zA-Z0-9\+\_\=\/]+)' failed to compile.*" => {
-                          out.append(s"Failed to compile '${hashes(moduleHash)}'\n")
-                          val ref = hashes(moduleHash)
-                          deepDependencies(ref).foreach { ref =>
-                            multiplexer(ref) = NoCompile(ref)
-                          }
-                          multiplexer(hashes(moduleHash)) =
-                            StopCompile(hashes(moduleHash), out.toString(), false)
-                          out.clear()
-                        }
-                        case _ => ()
-                      }
-                    }
-                  }
-                  .await() == 0
-              }
-
-            val finalResult =
-              if (compileResult && (artifact.kind == Application || artifact.kind == Benchmarks)) {
-                multiplexer(artifact.ref) = StartStreaming
-                if (artifact.kind == Benchmarks) {
-                  Jmh.instrument(
-                      layout.classesDir(hash(artifact.ref)),
-                      layout.benchmarksDir(hash(artifact.ref)),
-                      layout.resourcesDir(hash(artifact.ref)))
-                  val javaSources =
-                    layout.benchmarksDir(hash(artifact.ref)).findChildren(_.endsWith(".java"))
-                  layout.shell.javac(
-                      classpath(artifact.ref, layout).to[List].map(_.value),
-                      layout.classesDir(hash(artifact.ref)).value,
-                      javaSources.map(_.value).to[List])
-                }
-                val res = layout.shell
-                  .runJava(
-                      jmhRuntimeClasspath(io, artifact.ref, layout).to[List].map(_.value),
-                      if (artifact.kind == Benchmarks) "org.openjdk.jmh.Main"
-                      else artifact.main.getOrElse(""),
-                      securePolicy = artifact.kind == Application,
-                      layout
-                  ) { ln =>
-                    if (artifact.kind == Benchmarks) multiplexer(artifact.ref) = Print(ln)
-                    else {
-                      out.append(ln)
-                      out.append("\n")
-                    }
-                  }
-                  .await() == 0
-
-                multiplexer(artifact.ref) = StopStreaming
-
-                if (!res) {
-                  deepDependencies(artifact.ref).foreach { ref =>
-                    multiplexer(ref) = NoCompile(ref)
-                  }
-                  multiplexer(artifact.ref) = StopCompile(artifact.ref, out.toString, false)
-                  multiplexer.close(artifact.ref)
-                }
-                res
-              } else compileResult
-
-            CompileResult(finalResult, out.toString)
+          if (noCompilation) deepDependencies(artifact.ref).foreach { ref =>
+            multiplexer(ref) = NoCompile(ref)
           }
+          val targetHash = hash(artifact.ref).encoded
+          blocking {
+            compileModule(
+                targetHash,
+                layout,
+                multiplexer,
+                hashes,
+                BuildingClient(multiplexer, hashes)).map(_.getStatusCode == StatusCode.OK)
+          }.map { compileResult =>
+            if (compileResult && artifact.kind == Application) {
+              executeApplicationModule(io, multiplexer, layout, artifact, out)
+            } else compileResult
+          }.map(CompileResult(_, out.toString))
+        }
       }
-
     newFutures.updated(artifact.ref, future)
   }
 
+  private def executeApplicationModule(
+      io: Io,
+      multiplexer: Multiplexer[ModuleRef, CompileEvent],
+      layout: Layout,
+      artifact: Artifact,
+      out: StringBuilder
+    ) = {
+    val res = layout.shell
+      .runJava(
+          runtimeClasspath(io, artifact.ref, layout).to[List].map(_.value),
+          artifact.main.getOrElse(""),
+          true,
+          layout
+      ) { ln =>
+        out.append(ln)
+        out.append("\n")
+      }
+      .await() == 0
+    if (!res) {
+      deepDependencies(artifact.ref).foreach { ref =>
+        multiplexer(ref) = NoCompile(ref)
+      }
+      multiplexer(artifact.ref) = StopCompile(artifact.ref, out.toString, false)
+      multiplexer.close(artifact.ref)
+    }
+    res
+  }
 }
-
 case class Entity(project: Project, schema: Schema, path: Path)
 
 /** A Universe represents a the fully-resolved set of projects available in the layer */
@@ -987,6 +1084,7 @@ case class SkipCompile(ref: ModuleRef)                                   extends
 case class Print(line: String)                                           extends CompileEvent
 object StartStreaming                                                    extends CompileEvent
 object StopStreaming                                                     extends CompileEvent
+case class DiagnosticMsg(ref: ModuleRef, msg: DiagnosticMessage)         extends CompileEvent
 
 case class CompileResult(success: Boolean, output: String)
 

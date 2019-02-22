@@ -33,6 +33,10 @@ object Path {
       Some(Path(if (dir.endsWith("/")) dir.dropRight(1) else dir))
     case _ => None
   }
+
+  def getTempDir(prefix: String): Try[Path] =
+    Try { Path(Files.createTempDirectory("fury-").toString) }
+
 }
 
 case class Path(value: String) {
