@@ -239,6 +239,15 @@ case class Path(value: String) {
       java.nio.file.Files.createDirectories(parent.javaPath)
       this
     }
+
+  def linksTo(target: Path): Try[Path] =
+    Try {
+      Files.createSymbolicLink(javaPath, target.javaPath)
+      this
+    }.recover {
+      case e: java.io.IOException => this
+    }
+
 }
 
 case class FileNotFound(path: Path)      extends FuryException

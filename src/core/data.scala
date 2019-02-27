@@ -341,17 +341,17 @@ case class Compilation(
     }
   }
 
-  def retry[T](t: FiniteDuration)(f: => T): Future[T] =
+  def retry[T](duration: FiniteDuration)(f: => T): Future[T] =
     try {
       Future.successful(f)
     } catch {
       case e: Exception =>
-        if (t <= 0.milliseconds)
+        if (duration <= 0.milliseconds)
           Future.failed(e)
         else {
           val period = 50.milliseconds
           Thread.sleep(period.toMillis)
-          retry(t - period)(f)
+          retry(duration - period)(f)
         }
     }
 
@@ -379,17 +379,12 @@ case class Compilation(
       capabilities = new BuildClientCapabilities(
           Collections.singletonList("scala")
       )
-      _ <- Future {
-            Files.createSymbolicLink((layout.furyDir / ".bloop").javaPath, Path("bloop").javaPath)
-          }.recover {
-            case e: java.io.IOException => ()
-          }
-
+      _ <- Future.fromTry { (layout.furyDir / ".bloop").linksTo(Path("bloop")) }
       initializeParams = new InitializeBuildParams(
           "fury",
           "1.0.0",
           "2.0.0-M3",
-          new java.io.File(layout.furyDir.value).toURI.toString, // TODO - this should be done with config dir= `.fury/bloop`
+          new java.io.File(layout.furyDir.value).toURI.toString,
           capabilities
       )
       _       = server.buildInitialize(initializeParams)
