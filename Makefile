@@ -64,7 +64,7 @@ bootstrap/git/%: bootstrap/git/.dir
 bootstrap/bin:
 	mkdir -p $@
 
-compile: dist/bundle/bin/launcher bootstrap/scala $(NAILGUNJARPATH) jmh-jars $(REPOS) $(SRCS) $(foreach CFG, $(CFGS), .bloop/$(CFG))
+compile: dist/bundle/bin/launcher bootstrap/scala $(NAILGUNJARPATH) external-jars $(REPOS) $(SRCS) $(foreach CFG, $(CFGS), .bloop/$(CFG))
 	$< --skip-bsp-connection $(BLOOPVERSION)
 	bloop compile fury
 
@@ -107,8 +107,11 @@ dist/bundle/bin/coursier: dist/bundle/bin/.dir
 	curl -s -L -o $@ https://git.io/coursier
 	chmod +x $@
 
-jmh-jars: dist/bundle/bin/coursier
-	for JAR in $(shell dist/bundle/bin/coursier fetch org.openjdk.jmh:jmh-core:1.21 org.openjdk.jmh:jmh-generator-bytecode:1.21 org.openjdk.jmh:jmh-generator-reflection:1.21 org.openjdk.jmh:jmh-generator-asm:1.21); do \
+jmh_jars=org.openjdk.jmh:jmh-core:1.21 org.openjdk.jmh:jmh-generator-bytecode:1.21 org.openjdk.jmh:jmh-generator-reflection:1.21 org.openjdk.jmh:jmh-generator-asm:1.21
+bsp_jars=org.scala-sbt.ipcsocket:ipcsocket:1.0.0 org.eclipse.lsp4j:org.eclipse.lsp4j.jsonrpc:0.6.0 ch.epfl.scala:bsp4j:2.0.0-M3
+external_jars=$(jmh_jars) $(bsp_jars)
+external-jars: dist/bundle/bin/coursier
+	for JAR in $(shell dist/bundle/bin/coursier fetch $(external_jars)); do \
 		cp $$JAR dist/bundle/lib/ ; \
 	done
 
@@ -161,4 +164,4 @@ download: $(REPOS) dist/bundle/bin/coursier dist/bundle/bin/ng dist/bundle/bin/l
 install: dist/install.sh
 	dist/install.sh
 
-.PHONY: all publish compile watch bloop-clean clean-compile clean-dist clean test ci clean-ci test-isolated integration-isolated integration $(TESTS) all-jars download install jmh-jars
+.PHONY: all publish compile watch bloop-clean clean-compile clean-dist clean test ci clean-ci test-isolated integration-isolated integration $(TESTS) all-jars download install external-jars
