@@ -23,12 +23,15 @@ import mercator._
 
 import scala.util._
 import scala.concurrent.duration._
-
 import ch.epfl.scala.bsp4j._
 import org.eclipse.lsp4j.jsonrpc.Launcher
 import java.util.concurrent.Executors
+import scala.concurrent.ExecutionContext.Implicits.global
+
 import org.scalasbt.ipcsocket.UnixDomainSocket
+
 import scala.collection.JavaConverters._
+import scala.concurrent.Future
 
 object Bloop {
 
@@ -38,6 +41,31 @@ object Bloop {
 
   private[this] def testServer(): Try[Unit] =
     Success(new Socket("localhost", 8212).close().unit)
+
+  var bloopFut: Option[UnixDomainSocket] = None
+
+  def retry[T](duration: FiniteDuration)(f: => T): Try[T] =
+    try {
+      Success(f)
+    } catch {
+      case e: Exception =>
+        if (duration <= 0.milliseconds)
+          Failure(e)
+        else {
+          val period = 50.milliseconds
+          Thread.sleep(period.toMillis)
+          retry(duration - period)(f)
+        }
+    }
+
+  def openSocket(layout: Layout): UnixDomainSocket = bloopFut.getOrElse {
+    val furyTempPath = Path.getTempDir("fury-socket-").get
+    val socketPath   = furyTempPath / "socket"
+    layout.shell.bloop.startBsp(socketPath.value)
+    val bloopSocket = retry(3 seconds) { new UnixDomainSocket(socketPath.value) }.get
+    bloopFut = Some(bloopSocket)
+    bloopSocket
+  }
 
   def server(shell: Shell, io: Io): Try[Unit] = synchronized {
     try {

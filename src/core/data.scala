@@ -276,13 +276,9 @@ case class Compilation(
       multiplexer: Multiplexer[ModuleRef, CompileEvent],
       hashes: Map[String, ModuleRef])
       extends BuildClient {
-    override def onBuildShowMessage(params: ShowMessageParams): Unit = {
-//      println(params.getMessage)
-    }
+    override def onBuildShowMessage(params: ShowMessageParams): Unit = {}
 
-    override def onBuildLogMessage(params: LogMessageParams): Unit = {
-      //   println(params.toString)
-    }
+    override def onBuildLogMessage(params: LogMessageParams): Unit = {}
 
     override def onBuildPublishDiagnostics(params: PublishDiagnosticsParams): Unit = {
       //println(params)
@@ -299,10 +295,7 @@ case class Compilation(
           ) // TODO: beautify me
       )
     }
-    override def onBuildTargetDidChange(params: DidChangeBuildTarget): Unit = {
-//      println(s"didChange ${params.toString}")
-
-    }
+    override def onBuildTargetDidChange(params: DidChangeBuildTarget): Unit = {}
 
     override def onBuildTaskStart(params: TaskStartParams): Unit = {
       val gson = new Gson()
@@ -312,7 +305,6 @@ case class Compilation(
       val hash =
         new java.net.URI(report.getTarget.getUri).getRawQuery.split("=")(1)
       val modref = hashes(hash)
-      //  println(s"Compiling ${modref}")
       multiplexer(modref) = StartCompile(modref)
     }
 
@@ -387,14 +379,15 @@ case class Compilation(
           new java.io.File(layout.furyDir.value).toURI.toString,
           capabilities
       )
-      _       = server.buildInitialize(initializeParams)
-      _       = server.onBuildInitialized()
+      _ <- Future { server.buildInitialize(initializeParams).get }
+      _ = server.onBuildInitialized()
+
       targets <- Future { server.workspaceBuildTargets.get }
       foundTarget <- Future.fromTry {
                       targets.getTargets.asScala
                         .find(_.getDisplayName == target)
                         .ascribe(new RuntimeException(
-                            s"FATAL ERROR: could not find hash key ${target} in bloop configuration"))
+                            s"FATAL ERROR: could not find hash key ${target} in bloop configuration, ${targets.getTargets.asScala}"))
                     }
       cp = new CompileParams(Collections.singletonList(foundTarget.getId))
     } yield server.buildTargetCompile(cp).get
