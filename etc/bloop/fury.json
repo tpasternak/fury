@@ -40,10 +40,10 @@
       "$ROOT/dist/bundle/lib/jmh-generator-asm-1.21.jar",
       "$ROOT/dist/bundle/lib/jmh-generator-bytecode-1.21.jar",
       "$ROOT/dist/bundle/lib/jopt-simple-4.6.jar",
-      "/home/tpasternak/.ivy2/cache/ch.epfl.scala/bsp4j/jars/bsp4j-2.0.0-M3.jar",
-      "/home/tpasternak/.ivy2/cache/org.scala-sbt.ipcsocket/ipcsocket/jars/ipcsocket-1.0.0.jar",
-	"/home/tpasternak/.ivy2/cache/org.eclipse.lsp4j/org.eclipse.lsp4j.jsonrpc/jars/org.eclipse.lsp4j.jsonrpc-0.5.0.jar",
-	"/home/tpasternak/.ivy2/cache/com.google.code.gson/gson/jars/gson-2.7.jar"
+      "$ROOT/dist/bundle/lib/bsp4j-2.0.0-M3.jar",
+      "$ROOT/dist/bundle/lib/ipcsocket-1.0.0.jar",
+      "$ROOT/dist/bundle/lib/org.eclipse.lsp4j.jsonrpc-0.6.0.jar",
+      "$ROOT/dist/bundle/lib/gson-2.7.jar"
     ],
     "out": "$ROOT/bootstrap/bloop/out",
     "classesDir": "$ROOT/bootstrap/bin",
