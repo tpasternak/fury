@@ -58,15 +58,6 @@ object Bloop {
         }
     }
 
-  def openSocket(layout: Layout): UnixDomainSocket = bloopFut.getOrElse {
-    val furyTempPath = Path.getTempDir("fury-socket-").get
-    val socketPath   = furyTempPath / "socket"
-    layout.shell.bloop.startBsp(socketPath.value)
-    val bloopSocket = retry(3 seconds) { new UnixDomainSocket(socketPath.value) }.get
-    bloopFut = Some(bloopSocket)
-    bloopSocket
-  }
-
   def server(shell: Shell, io: Io): Try[Unit] = synchronized {
     try {
       testServer()

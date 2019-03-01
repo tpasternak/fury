@@ -305,6 +305,7 @@ case class Compilation(
       val hash =
         new java.net.URI(report.getTarget.getUri).getRawQuery.split("=")(1)
       val modref = hashes(hash)
+      println(s"Compiling ${modref}")
       multiplexer(modref) = StartCompile(modref)
     }
 
@@ -333,13 +334,13 @@ case class Compilation(
     }
   }
 
-  def retry[T](duration: FiniteDuration)(f: => T): Future[T] =
+  def retry[T](duration: FiniteDuration)(f: => T): Try[T] =
     try {
-      Future.successful(f)
+      Success(f)
     } catch {
       case e: Exception =>
         if (duration <= 0.milliseconds)
-          Future.failed(e)
+          Failure(e)
         else {
           val period = 50.milliseconds
           Thread.sleep(period.toMillis)
@@ -353,44 +354,57 @@ case class Compilation(
       multiplexer: Multiplexer[ModuleRef, CompileEvent],
       hashes: Map[String, ModuleRef],
       client: BuildingClient
-    ): Future[ch.epfl.scala.bsp4j.CompileResult] =
-    for {
-      furyTempPath <- Future.fromTry { Path.getTempDir("fury-socket-") }
-      socketPath   = furyTempPath / "socket"
-      _            = layout.shell.bloop.startBsp(socketPath.value)
-      bloopSocket  <- retry(3 seconds) { new UnixDomainSocket(socketPath.value) }
-      launcher = new Launcher.Builder[BuildServer]()
-        .setRemoteInterface(classOf[BuildServer])
-        .setExecutorService(Executors.newCachedThreadPool())
-        .setInput(bloopSocket.getInputStream)
-        .setOutput(bloopSocket.getOutputStream)
-        .setLocalService(client)
-        .create()
-      _      = launcher.startListening()
-      server = launcher.getRemoteProxy
-      capabilities = new BuildClientCapabilities(
-          Collections.singletonList("scala")
-      )
-      _ <- Future.fromTry { (layout.furyDir / ".bloop").linksTo(Path("bloop")) }
-      initializeParams = new InitializeBuildParams(
-          "fury",
-          "1.0.0",
-          "2.0.0-M3",
-          new java.io.File(layout.furyDir.value).toURI.toString,
-          capabilities
-      )
-      _ <- Future { server.buildInitialize(initializeParams).get }
-      _ = server.onBuildInitialized()
+    ): Future[ch.epfl.scala.bsp4j.CompileResult] = Future {
 
-      targets <- Future { server.workspaceBuildTargets.get }
-      foundTarget <- Future.fromTry {
-                      targets.getTargets.asScala
-                        .find(_.getDisplayName == target)
-                        .ascribe(new RuntimeException(
-                            s"FATAL ERROR: could not find hash key ${target} in bloop configuration, ${targets.getTargets.asScala}"))
-                    }
-      cp = new CompileParams(Collections.singletonList(foundTarget.getId))
-    } yield server.buildTargetCompile(cp).get
+    val furyTempPath = Path.getTempDir("fury-socket-").get
+    val socketPath   = furyTempPath / "socket"
+    val process      = layout.shell.bloop.startBsp(socketPath.value)
+    val bloopSocket = retry(1 seconds) {
+      new UnixDomainSocket(socketPath.value)
+    }.get
+    val ex = Executors.newCachedThreadPool()
+    val launcher = new Launcher.Builder[BuildServer]()
+      .setRemoteInterface(classOf[BuildServer])
+      .setExecutorService(ex)
+      .setInput(bloopSocket.getInputStream)
+      .setOutput(bloopSocket.getOutputStream)
+      .setLocalService(client)
+      .create()
+    val l      = launcher.startListening()
+    val server = launcher.getRemoteProxy
+    val capabilities = new BuildClientCapabilities(
+        Collections.singletonList("scala")
+    )
+    (layout.furyDir / ".bloop").linksTo(Path("bloop"))
+    val initializeParams = new InitializeBuildParams(
+        "fury",
+        "1.0.0",
+        "2.0.0-M3",
+        new java.io.File(layout.furyDir.value).toURI.toString,
+        capabilities
+    )
+    println("initializing")
+    server.buildInitialize(initializeParams).get
+    server.onBuildInitialized()
+
+    println("initialized")
+
+    val targets = server.workspaceBuildTargets.get
+
+    println("targets get")
+    val foundTarget = targets.getTargets.asScala.find(_.getDisplayName == target).get
+
+    println(s"compilation start '${target}'")
+    val cp = new CompileParams(Collections.singletonList(foundTarget.getId))
+    val x  = server.buildTargetCompile(cp).get
+    println("compilation done")
+    l.cancel(true)
+    bloopSocket.shutdownInput()
+    Thread.sleep(1.second.toMillis) // TODO: please do it in civilized way
+    bloopSocket.shutdownOutput()
+    ex.shutdown()
+    x
+  }
 
   def compile(
       io: Io,
